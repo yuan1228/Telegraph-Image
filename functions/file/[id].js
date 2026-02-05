@@ -7,7 +7,7 @@ export async function onRequest(context) {
 
     const url = new URL(request.url);
     let fileUrl = 'https://telegra.ph/' + url.pathname + url.search
-    if (url.pathname.length > 39) { // Path length > 39 indicates file uploaded via Telegram Bot API
+    if (url.pathname.length > 39) { 
         const formdata = new FormData();
         formdata.append("file_id", url.pathname);
 
@@ -16,11 +16,7 @@ export async function onRequest(context) {
             body: formdata,
             redirect: "follow"
         };
-        // /file/AgACAgEAAxkDAAMDZt1Gzs4W8dQPWiQJxO5YSH5X-gsAAt-sMRuWNelGOSaEM_9lHHgBAAMCAANtAAM2BA.png
-        //get the AgACAgEAAxkDAAMDZt1Gzs4W8dQPWiQJxO5YSH5X-gsAAt-sMRuWNelGOSaEM_9lHHgBAAMCAANtAAM2BA
-        console.log(url.pathname.split(".")[0].split("/")[2])
         const filePath = await getFilePath(env, url.pathname.split(".")[0].split("/")[2]);
-        console.log(filePath)
         fileUrl = `https://api.telegram.org/file/bot${env.TG_Bot_Token}/${filePath}`;
     }
 
@@ -30,29 +26,42 @@ export async function onRequest(context) {
         body: request.body,
     });
 
-    // If the response is OK, proceed with further checks
     if (!response.ok) return response;
 
-    // Log response details
-    console.log(response.ok, response.status);
+    // --- 核心修改开始：定义一个统一的“预览版”返回函数 ---
+    const getPreviewResponse = (originalResponse) => {
+        const newHeaders = new Headers(originalResponse.headers);
+        // 强制改为 inline (在线预览)
+        newHeaders.set('Content-Disposition', 'inline');
+        
+        // 自动修正 Content-Type 保证浏览器能识别图片
+        if (url.pathname.endsWith('.png')) {
+            newHeaders.set('Content-Type', 'image/png');
+        } else if (url.pathname.endsWith('.jpg') || url.pathname.endsWith('.jpeg')) {
+            newHeaders.set('Content-Type', 'image/jpeg');
+        } else if (url.pathname.endsWith('.gif')) {
+            newHeaders.set('Content-Type', 'image/gif');
+        }
 
-    // Allow the admin page to directly view the image
+        return new Response(originalResponse.body, {
+            status: originalResponse.status,
+            statusText: originalResponse.statusText,
+            headers: newHeaders,
+        });
+    };
+    // --- 核心修改结束 ---
+
     const isAdmin = request.headers.get('Referer')?.includes(`${url.origin}/admin`);
     if (isAdmin) {
-        return response;
+        return getPreviewResponse(response); // 修改处
     }
 
-    // Check if KV storage is available
     if (!env.img_url) {
-        console.log("KV storage not available, returning image directly");
-        return response;  // Directly return image response, terminate execution
+        return getPreviewResponse(response); // 修改处
     }
 
-    // The following code executes only if KV is available
     let record = await env.img_url.getWithMetadata(params.id);
     if (!record || !record.metadata) {
-        // Initialize metadata if it doesn't exist
-        console.log("Metadata not found, initializing...");
         record = {
             metadata: {
                 ListType: "None",
@@ -75,81 +84,52 @@ export async function onRequest(context) {
         fileSize: record.metadata.fileSize || 0,
     };
 
-    // Handle based on ListType and Label
     if (metadata.ListType === "White") {
-        return response;
+        return getPreviewResponse(response); // 修改处
     } else if (metadata.ListType === "Block" || metadata.Label === "adult") {
         const referer = request.headers.get('Referer');
         const redirectUrl = referer ? "https://static-res.pages.dev/teleimage/img-block-compressed.png" : `${url.origin}/block-img.html`;
         return Response.redirect(redirectUrl, 302);
     }
 
-    // Check if WhiteList_Mode is enabled
     if (env.WhiteList_Mode === "true") {
         return Response.redirect(`${url.origin}/whitelist-on.html`, 302);
     }
 
-    // If no metadata or further actions required, moderate content and add to KV if needed
     if (env.ModerateContentApiKey) {
         try {
-            console.log("Starting content moderation...");
             const moderateUrl = `https://api.moderatecontent.com/moderate/?key=${env.ModerateContentApiKey}&url=https://telegra.ph${url.pathname}${url.search}`;
             const moderateResponse = await fetch(moderateUrl);
 
-            if (!moderateResponse.ok) {
-                console.error("Content moderation API request failed: " + moderateResponse.status);
-            } else {
+            if (moderateResponse.ok) {
                 const moderateData = await moderateResponse.json();
-                console.log("Content moderation results:", moderateData);
-
                 if (moderateData && moderateData.rating_label) {
                     metadata.Label = moderateData.rating_label;
-
                     if (moderateData.rating_label === "adult") {
-                        console.log("Content marked as adult, saving metadata and redirecting");
                         await env.img_url.put(params.id, "", { metadata });
                         return Response.redirect(`${url.origin}/block-img.html`, 302);
                     }
                 }
             }
         } catch (error) {
-            console.error("Error during content moderation: " + error.message);
-            // Moderation failure should not affect user experience, continue processing
+            console.error("Error during moderation: " + error.message);
         }
     }
 
-    // Only save metadata if content is not adult content
-    // Adult content cases are already handled above and will not reach this point
-    console.log("Saving metadata");
     await env.img_url.put(params.id, "", { metadata });
 
-    // Return file content
-    return response;
+    return getPreviewResponse(response); // 修改处
 }
 
 async function getFilePath(env, file_id) {
     try {
         const url = `https://api.telegram.org/bot${env.TG_Bot_Token}/getFile?file_id=${file_id}`;
-        const res = await fetch(url, {
-            method: 'GET',
-        });
-
-        if (!res.ok) {
-            console.error(`HTTP error! status: ${res.status}`);
-            return null;
-        }
-
+        const res = await fetch(url, { method: 'GET' });
+        if (!res.ok) return null;
         const responseData = await res.json();
         const { ok, result } = responseData;
-
-        if (ok && result) {
-            return result.file_path;
-        } else {
-            console.error('Error in response data:', responseData);
-            return null;
-        }
+        return ok && result ? result.file_path : null;
     } catch (error) {
-        console.error('Error fetching file path:', error.message);
         return null;
     }
 }
