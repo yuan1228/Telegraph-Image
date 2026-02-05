@@ -1,4 +1,4 @@
 /file/*
-  Content-Type: image/jpeg
-  Content-Disposition: inline
   Access-Control-Allow-Origin: *
+  Content-Disposition: inline
+  Cache-Control: public, max-age=604800
