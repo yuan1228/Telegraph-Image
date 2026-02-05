@@ -1,0 +1,4 @@
+/file/*
+  Content-Type: image/jpeg
+  Content-Disposition: inline
+  Access-Control-Allow-Origin: *
